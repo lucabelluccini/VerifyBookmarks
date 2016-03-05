@@ -3,7 +3,7 @@ import re
 from requests.adapters import HTTPAdapter
 from bs4 import BeautifulSoup
 
-bookmark_file = """C:\\Users\\Luca\\Desktop\\bookmarks_03_03_16.html"""
+bookmark_file = """bookmarks_05_03_16.html"""
 
 
 def get_html_tree_from_file(filename):

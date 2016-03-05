@@ -1,48 +1,39 @@
-import xml.etree.ElementTree as ET
-from joblib import Parallel, delayed
 import requests
-import mmap
 import re
 from requests.adapters import HTTPAdapter
 from bs4 import BeautifulSoup
 
-#test
-
 bookmark_file = """C:\\Users\\Luca\\Desktop\\bookmarks_03_03_16.html"""
 
-def extract_bookmark_urls_html(filename):
+
+def get_html_tree_from_file(filename):
     with open(filename, 'r') as xml_file:
-        soup = BeautifulSoup(xml_file, 'lxml')
-        for a_element in soup.findAll('a', href=re.compile('http')):
-            yield a_element
+        return BeautifulSoup(xml_file, 'lxml')
 
-def extract_bookmark_urls_regexp(filename):
-    with open(filename, 'r+') as xml_file:
-        data = mmap.mmap(xml_file.fileno(), 0)
-        for result in re.finditer(r'HREF=\"(http.*?)\" ', data, re.MULTILINE):
-            yield result.group(1)
 
-def verify_url(url, session):
+def extract_anchors_from_tree(tree):
+    for a_element in tree.findAll('a', href=re.compile('http')):
+        yield a_element
+
+
+def verify_url(url, request_session):
     def result_build(original_url, final_url, reason):
-        return { original_url : { 'redirect_url': final_url, 'reason_or_status': reason } }
+        return reason, original_url, final_url
+
     try:
-        r = session.get(url, allow_redirects=True, timeout=5, stream=True)
-        redirect_info = 'Redirected' if url != r.url else None
-        if redirect_info == 'Redirected' or r.status_code != 200:
-            if url[4:] == r.url[5:]:
-                redirect_info = 'HttpsRedirected'
-            result = result_build(url, r.url, redirect_info if redirect_info else r.status_code)
-        else:
-            result = None
-    except requests.ConnectionError as ce:
-        result = result_build(url, url, 'ConnectionError: {}'.format(ce.message))
-    except requests.exceptions.ReadTimeout as rt:
-        result = result_build(url, url, 'ReadTimeout: {}'.format(rt.message))
-    except requests.exceptions.RequestException as re:
-        result = result_build(url, url, 'RequestException: {}'.format(re.message))
-    except Exception as e:
-        result = result_build(url, url, e.message)
-    return result
+        r = request_session.get(url, allow_redirects=True, timeout=5, stream=True)
+        status = 'Redirected' if url != r.url else str(r.status_code)
+        if status == 'Redirected' and url[4:] == r.url[5:]:
+            status = 'HttpsRedirected'
+        return result_build(url, r.url, status)
+    except requests.ConnectionError as cex:
+        return result_build(url, url, 'ConnectionError: {}'.format(cex.message))
+    except requests.exceptions.ReadTimeout as rtx:
+        return result_build(url, url, 'ReadTimeout: {}'.format(rtx.message))
+    except requests.exceptions.RequestException as rex:
+        return result_build(url, url, 'RequestException: {}'.format(rex.message))
+    except Exception as ex:
+        return result_build(url, url, ex.message)
 
 
 def generate_new_bookmark_file(filename, replace_map):
@@ -56,16 +47,29 @@ def generate_new_bookmark_file(filename, replace_map):
                 new_xml_file.write(line)
 
 
+def process_anchor(anchor, request_session):
+    print anchor
+    result = verify_url(request_session=request_session, url=anchor['href'])
+    print result
+    if result[0] == 'HttpsRedirected':
+        anchor['href'] = result[2]
+    elif result[0] == 'Redirected':
+        anchor['href'] = result[2]
+
+
 if __name__ == "__main__":
 
+    # Prepare a session to set a max retry policy and increase http connections pool size
     session = requests.Session()
     session.mount('http', HTTPAdapter(max_retries=5, pool_maxsize=100))
 
-    for x in extract_bookmark_urls_html(bookmark_file):
-        print x
-    exit()
-    results = Parallel(n_jobs=64, verbose=5)(delayed(verify_url)(url, session) for url in extract_bookmark_urls_regexp(bookmark_file))
+    # Parse file to obtain html tree
+    html_tree = get_html_tree_from_file(bookmark_file)
 
-    results = filter(None, results)
+    # Iterate over the anchors
+    for anchor_to_validate in extract_anchors_from_tree(html_tree):
+        process_anchor(anchor_to_validate, session)
 
-    replacement_map = { k: v for d in results for k, v in d.iteritems() if v['reason_or_status'] == 'HttpsRedirected' }
+    # Final file
+    print html_tree.prettify("utf-8")
+
